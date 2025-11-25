@@ -1,0 +1,16 @@
+
+let paintings=[],idx=0,user=''; let admin=false;
+window.onload=async()=>{ const saved=localStorage.getItem('user'); if(saved){user=saved;nameModal.style.display='none';loadPaintings();}};
+async function setName(){ user=username.value; if(!user)return; localStorage.setItem('user',user); nameModal.style.display='none'; loadPaintings(); }
+async function loadPaintings(){ const r=await fetch('/api/paintings'); paintings=await r.json(); if(paintings.length===0)return; show(); }
+function show(){ const p=paintings[idx]; if(!p)return; author.innerText=p.author; painting.src=p.imagePath; likeBtn.disabled=false; likeBtn.style.background=''; likeBtn.innerText='いいね'; }
+async function like(){ const p=paintings[idx]; const r=await fetch('/api/like',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({paintingId:p.id,userName:user})}); const d=await r.json(); if(d.ok){likeBtn.style.background='lightgreen';likeBtn.innerText='ありがとう!';likeBtn.disabled=true;} }
+function next(){ idx++; if(idx>=paintings.length){author.innerText='ご来場ありがとう!'; painting.src='thanks.png'; likeBtn.style.display='none'; return;} likeBtn.style.display='inline-block'; show(); }
+async function adminLogin(){ const r=await fetch('/api/admin/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:adminPass.value})}); if(r.ok){admin=true;document.querySelectorAll('.locked').forEach(b=>{b.classList.remove('locked');b.textContent=b.textContent.replace(' 🔒','');}); loadList(); loadRank();} }
+document.querySelectorAll('.tab-btn').forEach(btn=>btn.addEventListener('click',()=>{document.querySelectorAll('.tab-btn').forEach(b=>b.classList.remove('active'));document.querySelectorAll('.tab-content').forEach(c=>c.classList.remove('show'));btn.classList.add('active');document.getElementById(btn.dataset.tab).classList.add('show'); if(btn.dataset.tab==='listTab') loadList(); if(btn.dataset.tab==='rankTab') loadRank();}));
+async function uploadPainting(){ const fd=new FormData(); fd.append('author',authorReg.value); fd.append('order',orderReg.value); fd.append('image',imageReg.files[0]); await fetch('/api/admin/paintings',{method:'POST',body:fd}); alert('登録しました'); loadList(); }
+async function loadList(){ const r=await fetch('/api/paintings'); const data=await r.json(); list.innerHTML=data.map(x=>`<div><b>${x.order}. ${x.author}</b><br><img src="${x.imagePath}" width="120"><br><button onclick="editPainting('${x.id}')">編集</button><button onclick="deletePainting('${x.id}')">削除</button></div><hr>`).join(''); }
+async function editPainting(id){ const author=prompt('作者'); const order=prompt('順番'); const fd=new FormData(); fd.append('author',author); fd.append('order',order); await fetch('/api/admin/paintings/'+id,{method:'PUT',body:fd}); loadList(); }
+async function deletePainting(id){ if(!confirm('削除しますか？'))return; await fetch('/api/admin/paintings/'+id,{method:'DELETE'}); loadList(); }
+async function loadRank(){ const r=await fetch('/api/admin/likes/ranking'); const data=await r.json(); rank.innerHTML=data.map(x=>`${x.order}. ${x.author} - ${x.likes} いいね`).join('<br>'); }
+async function resetLikes(){ await fetch('/api/admin/likes/reset',{method:'DELETE'}); loadRank(); }
