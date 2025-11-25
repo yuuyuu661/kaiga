@@ -1,0 +1,56 @@
+
+<!DOCTYPE html><html><head><meta charset="utf-8"><title>絵画展</title>
+<link rel="stylesheet" href="style.css">
+</head><body>
+<h1>絵画展サイト</h1>
+
+<div id="nameInput">
+  <p>ニックネームを入力</p>
+  <input id="username">
+  <button onclick="setName()">OK</button>
+</div>
+
+<div id="adminLogin">
+  <input id="adminPass" type="password" placeholder="管理パスワード">
+  <button onclick="adminLogin()">管理ログイン</button>
+</div>
+
+<div class="tabs">
+  <button class="tab-btn active" data-tab="exhibitTab">絵画展</button>
+  <button class="tab-btn locked" data-tab="regTab">作品登録 🔒</button>
+  <button class="tab-btn locked" data-tab="listTab">作品一覧 🔒</button>
+  <button class="tab-btn locked" data-tab="rankTab">いいねランキング 🔒</button>
+</div>
+
+<div id="exhibitTab" class="tab-content show">
+  <div id="viewer">
+    <h2 id="author"></h2>
+    <img id="painting" style="max-width:80%;">
+    <br>
+    <button onclick="like()">いいね</button>
+    <button onclick="next()">次へ</button>
+  </div>
+</div>
+
+<div id="regTab" class="tab-content">
+  <h2>作品登録</h2>
+  <input id="authorReg" placeholder="作者"><br>
+  <input id="orderReg" type="number" placeholder="順番"><br>
+  <input id="imageReg" type="file"><br>
+  <button onclick="uploadPainting()">登録</button>
+</div>
+
+<div id="listTab" class="tab-content">
+  <h2>作品一覧</h2>
+  <button onclick="loadList()">読み込み</button>
+  <div id="list"></div>
+</div>
+
+<div id="rankTab" class="tab-content">
+  <h2>ランキング</h2>
+  <button onclick="loadRank()">読み込み</button>
+  <div id="rank"></div>
+</div>
+
+<script src="script.js"></script>
+</body></html>
