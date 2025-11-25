@@ -1,41 +1,80 @@
-
-<!DOCTYPE html><html><head><meta charset="utf-8"><title>管理</title>
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>管理ページ</title>
 <link rel="stylesheet" href="style.css">
-</head><body>
+<style>
+  body { padding: 20px; font-family: sans-serif; }
+  input, button { margin: 6px 0; padding: 6px; }
+</style>
+</head>
+<body>
+
 <h1>管理ページ</h1>
-<div id="login">
+
+<!-- ▼ 管理者ログイン -->
+<div id="loginArea">
+  <h3>管理者パスワードを入力</h3>
   <input id="adminPass" type="password" placeholder="パスワード">
   <button onclick="login()">ログイン</button>
 </div>
+
+<!-- ▼ ログイン後のパネル -->
 <div id="panel" style="display:none;">
+
   <h2>作品登録</h2>
-  <input id="author" placeholder="作者"><br>
-  <input id="order" placeholder="掲示順" type="number"><br>
+  <input id="author" placeholder="作者名"><br>
+  <input id="order" type="number" placeholder="掲示順"><br>
   <input id="image" type="file"><br>
   <button onclick="uploadPainting()">登録</button>
-  <h2>ランキング</h2>
-  <button onclick="loadRank()">表示</button>
+
+  <hr>
+
+  <h2>いいねランキング</h2>
+  <button onclick="loadRank()">ランキング読み込み</button>
   <div id="rank"></div>
 </div>
 
 <script>
-async function login(){
-  const r=await fetch('/api/admin/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:adminPass.value})});
-  if(r.ok){ loginDiv.style.display='none'; panel.style.display='block'; }
-  else alert('NG');
+async function login() {
+  const r = await fetch('/api/admin/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ password: adminPass.value })
+  });
+
+  if (r.ok) {
+    loginArea.style.display = 'none';
+    panel.style.display = 'block';
+  } else {
+    alert('パスワードが違います！');
+  }
 }
-async function uploadPainting(){
-  const fd=new FormData();
-  fd.append('author',author.value);
-  fd.append('order',order.value);
-  fd.append('image',image.files[0]);
-  const r=await fetch('/api/admin/paintings',{method:'POST',body:fd});
-  alert("登録しました");
+
+async function uploadPainting() {
+  const fd = new FormData();
+  fd.append('author', author.value);
+  fd.append('order', order.value);
+  fd.append('image', image.files[0]);
+
+  await fetch('/api/admin/paintings', {
+    method: 'POST',
+    body: fd
+  });
+
+  alert("登録しました！");
 }
-async function loadRank(){
-  const r=await fetch('/api/admin/likes/ranking');
-  const data=await r.json();
-  rank.innerHTML = data.map(x=>`${x.author} : ${x.likes}`).join('<br>');
+
+async function loadRank() {
+  const r = await fetch('/api/admin/likes/ranking');
+  const data = await r.json();
+
+  rank.innerHTML = data
+    .map(x => `${x.order}. ${x.author} - ${x.likes} いいね`)
+    .join("<br>");
 }
 </script>
-</body></html>
+
+</body>
+</html>
