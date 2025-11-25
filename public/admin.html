@@ -1,0 +1,41 @@
+
+<!DOCTYPE html><html><head><meta charset="utf-8"><title>管理</title>
+<link rel="stylesheet" href="style.css">
+</head><body>
+<h1>管理ページ</h1>
+<div id="login">
+  <input id="adminPass" type="password" placeholder="パスワード">
+  <button onclick="login()">ログイン</button>
+</div>
+<div id="panel" style="display:none;">
+  <h2>作品登録</h2>
+  <input id="author" placeholder="作者"><br>
+  <input id="order" placeholder="掲示順" type="number"><br>
+  <input id="image" type="file"><br>
+  <button onclick="uploadPainting()">登録</button>
+  <h2>ランキング</h2>
+  <button onclick="loadRank()">表示</button>
+  <div id="rank"></div>
+</div>
+
+<script>
+async function login(){
+  const r=await fetch('/api/admin/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:adminPass.value})});
+  if(r.ok){ loginDiv.style.display='none'; panel.style.display='block'; }
+  else alert('NG');
+}
+async function uploadPainting(){
+  const fd=new FormData();
+  fd.append('author',author.value);
+  fd.append('order',order.value);
+  fd.append('image',image.files[0]);
+  const r=await fetch('/api/admin/paintings',{method:'POST',body:fd});
+  alert("登録しました");
+}
+async function loadRank(){
+  const r=await fetch('/api/admin/likes/ranking');
+  const data=await r.json();
+  rank.innerHTML = data.map(x=>`${x.author} : ${x.likes}`).join('<br>');
+}
+</script>
+</body></html>
