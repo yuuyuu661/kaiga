@@ -5,6 +5,8 @@ body {
   margin: 0;
   background: #fafafa;
   color: #111;
+  background: url("paper-bg.png") repeat;
+  background-size: 600px; /* 大きすぎる場合は調整 */
 }
 header {
   position: sticky;
