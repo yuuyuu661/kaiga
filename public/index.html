@@ -1,133 +1,354 @@
-<!doctype html>
-<html lang="ja">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>みんなの絵画展</title>
-  <link rel="stylesheet" href="/style.css" />
-</head>
-<body>
-  <header>
-    <h1>みんなの絵画展</h1>
-    <nav class="tabs" id="tabs">
-      <!-- Order: Exhibit, Likes/Admin, Register/Admin -->
-      <button class="tab active" data-tab="exhibit">絵画展</button>
-      <button class="tab" data-tab="likes" data-protected="true">いいね履歴・ランキング <span class="badge">管理</span></button>
-      <button class="tab" data-tab="register" data-protected="true">絵画登録 <span class="badge">管理</span></button>
-    </nav>
-    <div style="margin-left:auto; display:flex; align-items:center; gap:10px;">
-      <span class="muted">入場者：<span id="visitorNameDisp">未設定</span></span>
-      <!-- 名前変更は削除（仕様により禁止） -->
-      <button id="adminLoginBtn" class="secondary">管理者ログイン</button>
-    </div>
-  </header>
+const API_BASE = '';
+let ADMIN_TOKEN = sessionStorage.getItem('adminToken') || '';
 
-  <div class="wrap">
-    <!-- 展示タブ -->
-    <section id="panel-exhibit" class="card">
-      <h2 style="margin-top:0">絵画展</h2>
-      <div id="exhibitArea">
-        <div id="exhibitBox" class="imgbox"><span class="muted">作品がありません</span></div>
-        <p id="exhibitMeta" class="muted" style="margin:8px 0 16px;">題名 — 作者</p>
-        <div style="display:flex; gap:8px;">
-          <button id="likeBtn">いいね</button>
-          <button id="nextBtn" class="secondary">次の作品</button>
-        </div>
-        <p class="muted" style="margin-top:8px;">一人につき各作品1回のみ「いいね」できます。</p>
-      </div>
-      <div id="thanks" class="thanks hidden">来てくれてありがとう！</div>
-    </section>
+// ----- Tabs -----
+const tabsEl = document.getElementById('tabs');
+const tabs = [...tabsEl.querySelectorAll('.tab')];
+const panels = {
+  exhibit: document.getElementById('panel-exhibit'),
+  likes: document.getElementById('panel-likes'),
+  register: document.getElementById('panel-register'),
+};
+function showTab(name) {
+  tabs.forEach(t => t.classList.toggle('active', t.dataset.tab === name));
+  Object.entries(panels).forEach(([k, el]) => el.classList.toggle('hidden', k !== name));
+  if (name === 'exhibit') startExhibit();
+  if (name === 'likes') loadLikesAndRanking();
+  if (name === 'register') refreshArtList();
+}
+tabsEl.addEventListener('click', (e) => {
+  const btn = e.target.closest('.tab');
+  if (!btn) return;
+  const isProtected = btn.dataset.protected === 'true';
+  if (isProtected && !ADMIN_TOKEN) {
+    adminModal.showModal();
+    return;
+  }
+  showTab(btn.dataset.tab);
+});
 
-    <!-- 履歴・ランキング（管理者のみ） -->
-    <section id="panel-likes" class="card hidden">
-      <h2 style="margin-top:0">いいね履歴・ランキング</h2>
-      <div class="grid grid-2">
-        <div>
-          <h3>いいね履歴</h3>
-          <div style="overflow:auto; max-height: 420px; border:1px solid #e5e7eb; border-radius:8px;">
-            <table>
-              <thead><tr><th>日時</th><th>ユーザー</th><th>題名</th></tr></thead>
-              <tbody id="likesTable"></tbody>
-            </table>
+// ----- Visitor Name (one-time) -----
+const nameModal = document.getElementById('nameModal');
+const nameInput = document.getElementById('nameInput');
+const saveNameBtn = document.getElementById('saveNameBtn');
+const visitorNameDisp = document.getElementById('visitorNameDisp');
+
+function getVisitorName() { return localStorage.getItem('visitorName') || ''; }
+function setVisitorName(n) { localStorage.setItem('visitorName', n); visitorNameDisp.textContent = n || '未設定'; }
+
+saveNameBtn.addEventListener('click', () => {
+  const n = nameInput.value.trim();
+  if (!n) return alert('お名前を入力してください');
+  if (n.length > 24) return alert('24文字以内で入力してください');
+  // lock (no change allowed)
+  if (!getVisitorName()) {
+    setVisitorName(n);
+    nameModal.close();
+  } else {
+    alert('名前は変更できません');
+  }
+});
+
+// Initial show name modal if missing
+(function initName() {
+  const n = getVisitorName();
+  setVisitorName(n);
+  if (!n) nameModal.showModal();
+})();
+
+// ----- Admin Login -----
+const adminLoginBtn = document.getElementById('adminLoginBtn');
+const adminModal = document.getElementById('adminModal');
+const adminPassInput = document.getElementById('adminPassInput');
+const adminLoginDoBtn = document.getElementById('adminLoginDoBtn');
+const adminLoginMsg = document.getElementById('adminLoginMsg');
+
+adminLoginBtn.addEventListener('click', () => {
+  adminLoginMsg.textContent = '';
+  adminPassInput.value = '';
+  adminModal.showModal();
+});
+
+adminLoginDoBtn.addEventListener('click', async () => {
+  const password = adminPassInput.value;
+  try {
+    const res = await fetch('/api/admin/login', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ password })
+    });
+    if (!res.ok) throw new Error('login failed');
+    const data = await res.json();
+    ADMIN_TOKEN = data.token;
+    sessionStorage.setItem('adminToken', ADMIN_TOKEN);
+    adminLoginMsg.textContent = 'ログイン成功';
+    adminModal.close();
+  } catch (e) {
+    adminLoginMsg.textContent = 'ログイン失敗。パスワードを確認してください。';
+  }
+});
+
+// ----- Exhibit Flow -----
+const exhibitBox = document.getElementById('exhibitBox');
+const likeBtn = document.getElementById('likeBtn');
+const nextBtn = document.getElementById('nextBtn');
+const thanks = document.getElementById('thanks');
+const exhibitArea = document.getElementById('exhibitArea');
+
+let exhibitOrder = [];
+let exhibitIndex = 0;
+
+async function fetchArtworks() {
+  const res = await fetch('/api/artworks');
+  return await res.json();
+}
+
+async function startExhibit() {
+  const arts = await fetchArtworks();
+  exhibitOrder = arts;
+  exhibitIndex = 0;
+  renderCurrentArtwork();
+}
+
+function renderCurrentArtwork() {
+  const art = exhibitOrder[exhibitIndex];
+  const user = getVisitorName();
+  if (!user) { nameModal.showModal(); return; }
+  if (!art) {
+    exhibitArea.classList.add('hidden');
+    thanks.classList.remove('hidden');
+    return;
+  }
+  exhibitArea.classList.remove('hidden');
+  thanks.classList.add('hidden');
+  exhibitBox.innerHTML = '';
+  const img = new Image();
+  img.src = `/api/artworks/${art.id}/image`;
+  exhibitBox.appendChild(img);
+  likeBtn.disabled = false; // server enforces unique like; UI allowsクリックごとにリクエスト
+}
+
+likeBtn.addEventListener('click', async () => {
+  const art = exhibitOrder[exhibitIndex];
+  const user = getVisitorName();
+  if (!art || !user) return;
+  try {
+    await fetch('/api/likes', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ username: user, artworkId: art.id })
+    });
+    likeBtn.disabled = true;
+  } catch (e) { /* ignore */ }
+});
+
+nextBtn.addEventListener('click', () => {
+  exhibitIndex++;
+  if (exhibitIndex >= exhibitOrder.length) {
+    exhibitArea.classList.add('hidden');
+    thanks.classList.remove('hidden');
+  } else {
+    renderCurrentArtwork();
+  }
+});
+
+// ----- Likes + Ranking (admin) -----
+const likesTable = document.getElementById('likesTable');
+const rankingOl = document.getElementById('ranking');
+const rankingEmpty = document.getElementById('rankingEmpty');
+
+async function loadLikesAndRanking() {
+  if (!ADMIN_TOKEN) return;
+  // likes
+  const likesRes = await fetch('/api/likes', {
+    headers: { 'Authorization': `Bearer ${ADMIN_TOKEN}` }
+  });
+  const likes = await likesRes.json();
+  likesTable.innerHTML = likes.map(x => {
+    const d = new Date(x.created_at);
+    const z = (n)=> String(n).padStart(2,'0');
+    const t = `${d.getFullYear()}-${z(d.getMonth()+1)}-${z(d.getDate())} ${z(d.getHours())}:${z(d.getMinutes())}`;
+    return `<tr><td>${t}</td><td>${escapeHtml(x.username)}</td><td>作品 #${x.artwork_id}</td></tr>`;
+  }).join('') || `<tr><td colspan="3" class="muted">履歴がありません</td></tr>`;
+
+  // ranking
+  const rankRes = await fetch('/api/ranking', { headers: { 'Authorization': `Bearer ${ADMIN_TOKEN}` } });
+  const rank = await rankRes.json();
+  rankingOl.innerHTML = '';
+  if (!rank.length) { rankingEmpty.textContent = '作品がありません。'; return; }
+  if (rank.every(a => (a.like_count||0) === 0)) rankingEmpty.textContent = 'まだ「いいね」がありません。'; else rankingEmpty.textContent = '';
+  for (const a of rank) {
+    const li = document.createElement('li');
+    li.innerHTML = `<strong>作品 #${a.id}</strong> <span class="pill">いいね ${a.like_count||0}</span>`;
+    rankingOl.appendChild(li);
+  }
+}
+
+// ----- Register (admin) -----
+const fileInput = document.getElementById('fileInput');
+const addBtn = document.getElementById('addBtn');
+const previewBox = document.getElementById('previewBox');
+const artList = document.getElementById('artList');
+
+fileInput?.addEventListener('change', () => {
+  previewBox.innerHTML = '';
+  const f = fileInput.files?.[0];
+  if (!f) { previewBox.innerHTML = '<span class="muted">プレビュー</span>'; return; }
+  const url = URL.createObjectURL(f);
+  const img = new Image(); img.src = url; img.onload = () => URL.revokeObjectURL(url);
+  previewBox.appendChild(img);
+});
+
+addBtn?.addEventListener('click', async () => {
+  if (!ADMIN_TOKEN) return adminModal.showModal();
+  const f = fileInput.files?.[0];
+  if (!f) return alert('画像ファイルを選択してください');
+  const fd = new FormData();
+  fd.append('image', f);
+  const res = await fetch('/api/artworks', {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${ADMIN_TOKEN}` },
+    body: fd
+  });
+  if (!res.ok) return alert('登録に失敗しました（権限またはサーバーエラー）');
+  fileInput.value = '';
+  previewBox.innerHTML = '<span class="muted">登録しました。続けて追加できます。</span>';
+  refreshArtList();
+});
+
+async function refreshArtList() {
+  const arts = await fetchArtworks();
+  if (!arts.length){ artList.innerHTML = '<div class="muted">まだ作品がありません</div>'; return; }
+  artList.innerHTML = '';
+  for (const a of arts) {
+    const div = document.createElement('div');
+    div.className = 'card';
+    div.dataset.artId = String(a.id);
+    div.innerHTML = `
+      <div class="dragrow">
+        <div class="imgbox" style="min-height:160px"><img src="/api/artworks/${a.id}/image" alt="作品 #${a.id}" /></div>
+        <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; justify-content:space-between; margin-top:8px;">
+          <div><strong>作品 #${a.id}</strong></div>
+          <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+            <span class="drag-handle">ドラッグで並び替え</span>
+            <span class="pill">いいね ${a.like_count||0}</span>
+            <button class="secondary" data-act="edit">編集</button>
+            <button data-act="delete">削除</button>
           </div>
         </div>
-        <div>
-          <h3>ランキング（いいね数順）</h3>
-          <ol id="ranking" style="padding-left: 20px;"></ol>
-          <p class="muted" id="rankingEmpty">まだ「いいね」がありません。</p>
-        </div>
-      </div>
-    </section>
+      </div>`;
+    const editBtn = div.querySelector('button[data-act="edit"]');
+    const delBtn = div.querySelector('button[data-act="delete"]');
+    editBtn.addEventListener('click', () => onClickEdit(a));
+    delBtn.addEventListener('click', () => onClickDelete(a));
+    artList.appendChild(div);
+  }
+  enableDnD();
+}
 
-    <!-- 登録（管理者のみ） -->
-    <section id="panel-register" class="card hidden">
-      <h2 style="margin-top:0">絵画登録</h2>
-      <p class="muted">画像・題名・書いた人（作者）を登録します。画像はサーバー（DB）に保存されます。</p>
-      <div class="grid grid-2">
-        <div>
-          <label>画像ファイル（JPG/PNG）</label>
-          <input id="fileInput" type="file" accept="image/*" />
-          <div id="previewBox" class="imgbox" style="margin-top:12px;"><span class="muted">プレビュー</span></div>
-        </div>
-        <div>
-          <label>題名</label>
-          <input id="titleInput" type="text" placeholder="例：夕暮れの港" />
-          <label style="margin-top:12px; display:block;">書いた人（作者）</label>
-          <input id="authorInput" type="text" placeholder="例：山田 太郎" />
-          <div style="display:flex; gap:8px; margin-top:12px;">
-            <button id="addBtn">作品を登録</button>
-          </div>
-        </div>
-      </div>
-      <h3 style="margin-top:20px">登録済み作品 <span class="muted">(ドラッグ＆ドロップで並び替え、保存不要で即反映)</span></h3>
-      <div id="artList" class="grid" style="grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));"></div>
-    </section>
+// Utility
+function escapeHtml(s){ return (s||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
-<!-- 編集モーダル（管理） -->
-<dialog id="editModal">
-  <div class="modal">
-    <h2 style="margin-top:0">作品を編集</h2>
-    <input id="editTitle" type="text" placeholder="題名" />
-    <input id="editAuthor" type="text" placeholder="作者" style="margin-top:8px;" />
-    <div style="margin-top:8px;">
-      <label>画像を差し替える（任意）</label>
-      <input id="editFile" type="file" accept="image/*" />
-      <div id="editPreview" class="imgbox" style="margin-top:8px;"><span class="muted">現在の画像</span></div>
-    </div>
-    <div style="display:flex; gap:8px; justify-content:flex-end; margin-top:12px;">
-      <button id="editSaveBtn">保存</button>
-    </div>
-    <p id="editMsg" class="muted"></p>
-  </div>
-</dialog>
+// init
+showTab('exhibit');
 
-<div class="footer">© 2025 みんなの絵画展 — Railway + Postgres 永続</div>
-  </div>
+// ===== Admin edit/delete =====
+const editModal = document.getElementById('editModal');
+const editFile = document.getElementById('editFile');
+const editPreview = document.getElementById('editPreview');
+const editSaveBtn = document.getElementById('editSaveBtn');
+const editMsg = document.getElementById('editMsg');
+let editingId = null;
 
-  <!-- 名前入力モーダル（初回のみ・変更不可） -->
-  <dialog id="nameModal">
-    <div class="modal">
-      <h2 style="margin-top:0">お名前を入力してください</h2>
-      <p class="muted">展示の入場時に必要です。「いいね」履歴に表示されます。後から変更はできません。</p>
-      <input id="nameInput" type="text" placeholder="例：さくら" />
-      <div style="display:flex; gap:8px; justify-content:flex-end; margin-top:12px;">
-        <button id="saveNameBtn">入場する</button>
-      </div>
-    </div>
-  </dialog>
+editFile?.addEventListener('change', () => {
+  editPreview.innerHTML = '';
+  const f = editFile.files?.[0];
+  if (!f) { editPreview.innerHTML = '<span class="muted">現在の画像</span>'; return; }
+  const url = URL.createObjectURL(f);
+  const img = new Image(); img.src = url; img.onload = () => URL.revokeObjectURL(url);
+  editPreview.appendChild(img);
+});
 
-  <!-- 管理者ログインモーダル -->
-  <dialog id="adminModal">
-    <div class="modal">
-      <h2 style="margin-top:0">管理者ログイン</h2>
-      <input id="adminPassInput" type="password" placeholder="管理者パスワード" />
-      <div style="display:flex; gap:8px; justify-content:flex-end; margin-top:12px;">
-        <button id="adminLoginDoBtn">ログイン</button>
-      </div>
-      <p id="adminLoginMsg" class="muted"></p>
-    </div>
-  </dialog>
+editSaveBtn?.addEventListener('click', async () => {
+  if (!ADMIN_TOKEN || !editingId) return;
+  const f = editFile.files?.[0];
+  if (!f) return alert('差し替える画像ファイルを選択してください');
+  const fd = new FormData();
+  fd.append('image', f);
+  const res = await fetch(`/api/artworks/${editingId}`, {
+    method: 'PUT',
+    headers: { 'Authorization': `Bearer ${ADMIN_TOKEN}` },
+    body: fd
+  });
+  if (!res.ok) { editMsg.textContent = '保存に失敗しました'; return; }
+  editMsg.textContent = '保存しました';
+  editModal.close();
+  editFile.value = '';
+  refreshArtList();
+});
 
-  <script type="module" src="/script.js"></script>
-</body>
-</html>
+async function onClickEdit(a) {
+  editingId = a.id;
+  editFile.value = '';
+  editPreview.innerHTML = `<img src="/api/artworks/${a.id}/image" style="max-width:100%; max-height:240px; object-fit:contain;" />`;
+  editMsg.textContent = '';
+  editModal.showModal();
+}
+
+async function onClickDelete(a) {
+  if (!confirm(`作品 #${a.id} を削除しますか？（いいね履歴も同時に削除されます）`)) return;
+  const res = await fetch(`/api/artworks/${a.id}`, {
+    method: 'DELETE',
+    headers: { 'Authorization': `Bearer ${ADMIN_TOKEN}` }
+  });
+  if (!res.ok) return alert('削除に失敗しました');
+  refreshArtList();
+}
+
+// ===== Drag & Drop ordering (admin) =====
+let dragEl = null;
+
+function enableDnD() {
+  if (!ADMIN_TOKEN) return; // admin only
+  [...artList.children].forEach(card => {
+    card.setAttribute('draggable', 'true');
+    card.addEventListener('dragstart', (e) => {
+      dragEl = card;
+      card.classList.add('dragging');
+      e.dataTransfer.effectAllowed = 'move';
+    });
+    card.addEventListener('dragend', async () => {
+      card.classList.remove('dragging');
+      dragEl = null;
+      await saveOrderToServer();
+    });
+    card.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      const target = card;
+      if (!dragEl || dragEl === target) return;
+      target.classList.add('drop-target');
+      const rect = target.getBoundingClientRect();
+      const before = (e.clientY - rect.top) < rect.height / 2;
+      if (before) target.parentNode.insertBefore(dragEl, target);
+      else target.parentNode.insertBefore(dragEl, target.nextSibling);
+    });
+    card.addEventListener('dragleave', () => card.classList.remove('drop-target'));
+    card.addEventListener('drop', (e) => {
+      e.preventDefault();
+      card.classList.remove('drop-target');
+    });
+  });
+}
+
+async function saveOrderToServer() {
+  const ids = [...artList.children].map(c => Number(c.dataset.artId)).filter(Boolean);
+  if (!ids.length) return;
+  await fetch('/api/artworks/order', {
+    method: 'PUT',
+    headers: {
+      'Content-Type':'application/json',
+      'Authorization': `Bearer ${ADMIN_TOKEN}`
+    },
+    body: JSON.stringify({ ids })
+  });
+}
