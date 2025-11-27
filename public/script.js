@@ -179,6 +179,26 @@ async function loadLikesAndRanking() {
   }
 }
 
+const resetLikesBtn = document.getElementById("resetLikesBtn");
+const resetMsg = document.getElementById("resetMsg");
+
+resetLikesBtn.onclick = async () => {
+  if (!ADMIN_TOKEN) return adminModal.showModal();
+  if (!confirm("本当に全ての『いいね』をリセットしますか？")) return;
+
+  try {
+    const res = await fetch("/api/likes_all", {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${ADMIN_TOKEN}` }
+    });
+    if (!res.ok) throw 0;
+
+    resetMsg.textContent = "リセット完了しました！";
+    loadLikesAndRanking();  // リアルタイム更新
+  } catch {
+    resetMsg.textContent = "リセットに失敗しました。";
+  }
+};
 /* ---------------- Register ---------------- */
 const fileInput = document.getElementById("fileInput");
 const previewBox = document.getElementById("previewBox");
