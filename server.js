@@ -189,6 +189,18 @@ app.post('/api/likes', async (req, res) => {
   } catch (e) { console.error(e); res.status(500).json({ error: 'server error' }); }
 });
 
+// ---- Reset All Likes (Admin Only) ----
+app.delete('/api/likes_all', authMiddleware, async (_req, res) => {
+  try {
+    await pool.query('DELETE FROM likes');
+    res.json({ ok: true });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: 'server error' });
+  }
+});
+
+
 app.get('/api/likes', authMiddleware, async (_req, res) => {
   try {
     const { rows } = await pool.query(`
