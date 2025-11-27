@@ -1,222 +1,354 @@
-import express from 'express';
-import morgan from 'morgan';
-import cors from 'cors';
-import multer from 'multer';
-import jwt from 'jsonwebtoken';
-import { Pool } from 'pg';
+const API_BASE = '';
+let ADMIN_TOKEN = sessionStorage.getItem('adminToken') || '';
 
-const app = express();
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
-
-app.use(cors());
-app.use(morgan('tiny'));
-app.use(express.json({ limit: '2mb' }));
-app.use(express.urlencoded({ extended: true }));
-app.use(express.static('public'));
-
-// ---- Env ----
-const PORT = process.env.PORT || 3000;
-const DATABASE_URL = process.env.DATABASE_URL;
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin123';
-const ADMIN_JWT_SECRET = process.env.ADMIN_JWT_SECRET || 'change_me_secret';
-
-if (!DATABASE_URL) {
-  console.warn('[warn] DATABASE_URL is not set. Set it on Railway (e.g., Postgres connection URL).');
+// ----- Tabs -----
+const tabsEl = document.getElementById('tabs');
+const tabs = [...tabsEl.querySelectorAll('.tab')];
+const panels = {
+  exhibit: document.getElementById('panel-exhibit'),
+  likes: document.getElementById('panel-likes'),
+  register: document.getElementById('panel-register'),
+};
+function showTab(name) {
+  tabs.forEach(t => t.classList.toggle('active', t.dataset.tab === name));
+  Object.entries(panels).forEach(([k, el]) => el.classList.toggle('hidden', k !== name));
+  if (name === 'exhibit') startExhibit();
+  if (name === 'likes') loadLikesAndRanking();
+  if (name === 'register') refreshArtList();
 }
-
-// SSL true for hosted Postgres (Railway). If local fails, you may set PGSSLMODE=disable.
-const pool = new Pool({ connectionString: DATABASE_URL, ssl: { rejectUnauthorized: false } });
-
-async function migrate() {
-  // Base tables
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS artworks (
-      id SERIAL PRIMARY KEY,
-      title TEXT NOT NULL,
-      author TEXT NOT NULL,
-      image BYTEA NOT NULL,
-      sort_order INTEGER,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-  `);
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS likes (
-      id SERIAL PRIMARY KEY,
-      username TEXT NOT NULL,
-      artwork_id INTEGER NOT NULL REFERENCES artworks(id) ON DELETE CASCADE,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      UNIQUE (username, artwork_id)
-    );
-  `);
-  // Ensure sort_order column exists (for older deployments)
-  await pool.query(`ALTER TABLE artworks ADD COLUMN IF NOT EXISTS sort_order INTEGER;`);
-  // Backfill sort_order for NULL rows based on created_at,id
-  await pool.query(`
-    WITH ranked AS (
-      SELECT id, ROW_NUMBER() OVER (ORDER BY created_at ASC, id ASC) AS rn
-      FROM artworks
-    )
-    UPDATE artworks AS a
-    SET sort_order = r.rn
-    FROM ranked AS r
-    WHERE a.id = r.id AND a.sort_order IS NULL;
-  `);
-  console.log('[migrate] done');
-}
-
-// ---- Auth (admin) ----
-function authMiddleware(req, res, next) {
-  const hdr = req.headers.authorization || '';
-  const token = hdr.startsWith('Bearer ') ? hdr.slice(7) : null;
-  if (!token) return res.status(401).json({ error: 'Unauthorized' });
-  try {
-    const payload = jwt.verify(token, ADMIN_JWT_SECRET);
-    if (payload.role !== 'admin') throw new Error('invalid');
-    next();
-  } catch (e) { return res.status(401).json({ error: 'Unauthorized' }); }
-}
-
-app.post('/api/admin/login', async (req, res) => {
-  const { password } = req.body || {};
-  if (!password) return res.status(400).json({ error: 'password required' });
-  if (password !== ADMIN_PASSWORD) return res.status(401).json({ error: 'invalid password' });
-  const token = jwt.sign({ role: 'admin' }, ADMIN_JWT_SECRET, { expiresIn: '12h' });
-  res.json({ token });
+tabsEl.addEventListener('click', (e) => {
+  const btn = e.target.closest('.tab');
+  if (!btn) return;
+  const isProtected = btn.dataset.protected === 'true';
+  if (isProtected && !ADMIN_TOKEN) {
+    adminModal.showModal();
+    return;
+  }
+  showTab(btn.dataset.tab);
 });
 
-// ---- Artworks CRUD ----
-app.post('/api/artworks', authMiddleware, upload.single('image'), async (req, res) => {
-  try {
-    const { title, author } = req.body;
-    if (!req.file) return res.status(400).json({ error: 'image required' });
-    if (!title || !author) return res.status(400).json({ error: 'title/author required' });
-    // choose next sort_order = max+1
-    const nextOrderRes = await pool.query(`SELECT COALESCE(MAX(sort_order),0)+1 AS next FROM artworks`);
-    const nextOrder = nextOrderRes.rows[0].next || 1;
-    const { rows } = await pool.query(
-      `INSERT INTO artworks (title, author, image, sort_order) VALUES ($1,$2,$3,$4) RETURNING id, title, author, created_at, sort_order`,
-      [title, author, req.file.buffer, nextOrder]
-    );
-    res.json(rows[0]);
-  } catch (e) {
-    console.error(e);
-    res.status(500).json({ error: 'server error' });
+// ----- Visitor Name (one-time) -----
+const nameModal = document.getElementById('nameModal');
+const nameInput = document.getElementById('nameInput');
+const saveNameBtn = document.getElementById('saveNameBtn');
+const visitorNameDisp = document.getElementById('visitorNameDisp');
+
+function getVisitorName() { return localStorage.getItem('visitorName') || ''; }
+function setVisitorName(n) { localStorage.setItem('visitorName', n); visitorNameDisp.textContent = n || '未設定'; }
+
+saveNameBtn.addEventListener('click', () => {
+  const n = nameInput.value.trim();
+  if (!n) return alert('お名前を入力してください');
+  if (n.length > 24) return alert('24文字以内で入力してください');
+  // lock (no change allowed)
+  if (!getVisitorName()) {
+    setVisitorName(n);
+    nameModal.close();
+  } else {
+    alert('名前は変更できません');
   }
 });
 
-app.put('/api/artworks/:id', authMiddleware, upload.single('image'), async (req, res) => {
-  try {
-    const id = Number(req.params.id);
-    const { title, author } = req.body;
-    if (!title || !author) return res.status(400).json({ error: 'title/author required' });
-    if (req.file) {
-      await pool.query(`UPDATE artworks SET title=$1, author=$2, image=$3 WHERE id=$4`, [title, author, req.file.buffer, id]);
-    } else {
-      await pool.query(`UPDATE artworks SET title=$1, author=$2 WHERE id=$3`, [title, author, id]);
-    }
-    const { rows } = await pool.query(`
-      SELECT a.id, a.title, a.author, a.created_at,
-             COALESCE(l.cnt, 0)::int AS like_count
-      FROM artworks a
-      LEFT JOIN (SELECT artwork_id, COUNT(*)::int AS cnt FROM likes GROUP BY artwork_id) l
-        ON l.artwork_id = a.id
-      WHERE a.id=$1
-    `, [id]);
-    if (!rows.length) return res.status(404).json({ error: 'not found' });
-    res.json(rows[0]);
-  } catch (e) { console.error(e); res.status(500).json({ error: 'server error' }); }
+// Initial show name modal if missing
+(function initName() {
+  const n = getVisitorName();
+  setVisitorName(n);
+  if (!n) nameModal.showModal();
+})();
+
+// ----- Admin Login -----
+const adminLoginBtn = document.getElementById('adminLoginBtn');
+const adminModal = document.getElementById('adminModal');
+const adminPassInput = document.getElementById('adminPassInput');
+const adminLoginDoBtn = document.getElementById('adminLoginDoBtn');
+const adminLoginMsg = document.getElementById('adminLoginMsg');
+
+adminLoginBtn.addEventListener('click', () => {
+  adminLoginMsg.textContent = '';
+  adminPassInput.value = '';
+  adminModal.showModal();
 });
 
-app.delete('/api/artworks/:id', authMiddleware, async (req, res) => {
+adminLoginDoBtn.addEventListener('click', async () => {
+  const password = adminPassInput.value;
   try {
-    const id = Number(req.params.id);
-    await pool.query(`DELETE FROM artworks WHERE id=$1`, [id]);
-    res.json({ ok: true });
-  } catch (e) { console.error(e); res.status(500).json({ error: 'server error' }); }
+    const res = await fetch('/api/admin/login', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ password })
+    });
+    if (!res.ok) throw new Error('login failed');
+    const data = await res.json();
+    ADMIN_TOKEN = data.token;
+    sessionStorage.setItem('adminToken', ADMIN_TOKEN);
+    adminLoginMsg.textContent = 'ログイン成功';
+    adminModal.close();
+  } catch (e) {
+    adminLoginMsg.textContent = 'ログイン失敗。パスワードを確認してください。';
+  }
 });
 
-app.put('/api/artworks/order', authMiddleware, async (req, res) => {
+// ----- Exhibit Flow -----
+const exhibitBox = document.getElementById('exhibitBox');
+const likeBtn = document.getElementById('likeBtn');
+const nextBtn = document.getElementById('nextBtn');
+const thanks = document.getElementById('thanks');
+const exhibitArea = document.getElementById('exhibitArea');
+
+let exhibitOrder = [];
+let exhibitIndex = 0;
+
+async function fetchArtworks() {
+  const res = await fetch('/api/artworks');
+  return await res.json();
+}
+
+async function startExhibit() {
+  const arts = await fetchArtworks();
+  exhibitOrder = arts;
+  exhibitIndex = 0;
+  renderCurrentArtwork();
+}
+
+function renderCurrentArtwork() {
+  const art = exhibitOrder[exhibitIndex];
+  const user = getVisitorName();
+  if (!user) { nameModal.showModal(); return; }
+  if (!art) {
+    exhibitArea.classList.add('hidden');
+    thanks.classList.remove('hidden');
+    return;
+  }
+  exhibitArea.classList.remove('hidden');
+  thanks.classList.add('hidden');
+  exhibitBox.innerHTML = '';
+  const img = new Image();
+  img.src = `/api/artworks/${art.id}/image`;
+  exhibitBox.appendChild(img);
+  likeBtn.disabled = false; // server enforces unique like; UI allowsクリックごとにリクエスト
+}
+
+likeBtn.addEventListener('click', async () => {
+  const art = exhibitOrder[exhibitIndex];
+  const user = getVisitorName();
+  if (!art || !user) return;
   try {
-    const { ids } = req.body || {};
-    if (!Array.isArray(ids) || !ids.length) return res.status(400).json({ error: 'ids required' });
-    const client = await pool.connect();
-    try {
-      await client.query('BEGIN');
-      for (let i = 0; i < ids.length; i++) {
-        const id = Number(ids[i]);
-        if (!Number.isFinite(id)) continue;
-        await client.query('UPDATE artworks SET sort_order=$1 WHERE id=$2', [i + 1, id]);
-      }
-      await client.query('COMMIT');
-    } catch (e) {
-      await client.query('ROLLBACK'); throw e;
-    } finally {
-      client.release();
-    }
-    res.json({ ok: true });
-  } catch (e) { console.error(e); res.status(500).json({ error: 'server error' }); }
+    await fetch('/api/likes', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ username: user, artworkId: art.id })
+    });
+    likeBtn.disabled = true;
+  } catch (e) { /* ignore */ }
 });
 
-// ---- Reads ----
-app.get('/api/artworks', async (_req, res) => {
-  try {
-    const { rows } = await pool.query(`
-      SELECT a.id, a.title, a.author, a.created_at,
-             COALESCE(l.cnt, 0)::int AS like_count
-      FROM artworks a
-      LEFT JOIN (SELECT artwork_id, COUNT(*)::int AS cnt FROM likes GROUP BY artwork_id) l
-        ON l.artwork_id = a.id
-      ORDER BY a.sort_order ASC NULLS LAST, a.created_at ASC, a.id ASC
-    `);
-    res.json(rows);
-  } catch (e) { console.error(e); res.status(500).json({ error: 'server error' }); }
+nextBtn.addEventListener('click', () => {
+  exhibitIndex++;
+  if (exhibitIndex >= exhibitOrder.length) {
+    exhibitArea.classList.add('hidden');
+    thanks.classList.remove('hidden');
+  } else {
+    renderCurrentArtwork();
+  }
 });
 
-app.get('/api/artworks/:id/image', async (req, res) => {
-  try {
-    const { rows } = await pool.query(`SELECT image FROM artworks WHERE id=$1`, [req.params.id]);
-    if (!rows.length) return res.status(404).end();
-    res.setHeader('Content-Type', 'image/jpeg');
-    res.send(rows[0].image);
-  } catch (e) { console.error(e); res.status(500).json({ error: 'server error' }); }
+// ----- Likes + Ranking (admin) -----
+const likesTable = document.getElementById('likesTable');
+const rankingOl = document.getElementById('ranking');
+const rankingEmpty = document.getElementById('rankingEmpty');
+
+async function loadLikesAndRanking() {
+  if (!ADMIN_TOKEN) return;
+  // likes
+  const likesRes = await fetch('/api/likes', {
+    headers: { 'Authorization': `Bearer ${ADMIN_TOKEN}` }
+  });
+  const likes = await likesRes.json();
+  likesTable.innerHTML = likes.map(x => {
+    const d = new Date(x.created_at);
+    const z = (n)=> String(n).padStart(2,'0');
+    const t = `${d.getFullYear()}-${z(d.getMonth()+1)}-${z(d.getDate())} ${z(d.getHours())}:${z(d.getMinutes())}`;
+    return `<tr><td>${t}</td><td>${escapeHtml(x.username)}</td><td>作品 #${x.artwork_id}</td></tr>`;
+  }).join('') || `<tr><td colspan="3" class="muted">履歴がありません</td></tr>`;
+
+  // ranking
+  const rankRes = await fetch('/api/ranking', { headers: { 'Authorization': `Bearer ${ADMIN_TOKEN}` } });
+  const rank = await rankRes.json();
+  rankingOl.innerHTML = '';
+  if (!rank.length) { rankingEmpty.textContent = '作品がありません。'; return; }
+  if (rank.every(a => (a.like_count||0) === 0)) rankingEmpty.textContent = 'まだ「いいね」がありません。'; else rankingEmpty.textContent = '';
+  for (const a of rank) {
+    const li = document.createElement('li');
+    li.innerHTML = `<strong>作品 #${a.id}</strong> <span class="pill">いいね ${a.like_count||0}</span>`;
+    rankingOl.appendChild(li);
+  }
+}
+
+// ----- Register (admin) -----
+const fileInput = document.getElementById('fileInput');
+const addBtn = document.getElementById('addBtn');
+const previewBox = document.getElementById('previewBox');
+const artList = document.getElementById('artList');
+
+fileInput?.addEventListener('change', () => {
+  previewBox.innerHTML = '';
+  const f = fileInput.files?.[0];
+  if (!f) { previewBox.innerHTML = '<span class="muted">プレビュー</span>'; return; }
+  const url = URL.createObjectURL(f);
+  const img = new Image(); img.src = url; img.onload = () => URL.revokeObjectURL(url);
+  previewBox.appendChild(img);
 });
 
-// ---- Likes ----
-app.post('/api/likes', async (req, res) => {
-  try {
-    const { username, artworkId } = req.body || {};
-    if (!username || !artworkId) return res.status(400).json({ error: 'username/artworkId required' });
-    await pool.query(`INSERT INTO likes (username, artwork_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`, [username, artworkId]);
-    res.json({ ok: true });
-  } catch (e) { console.error(e); res.status(500).json({ error: 'server error' }); }
+addBtn?.addEventListener('click', async () => {
+  if (!ADMIN_TOKEN) return adminModal.showModal();
+  const f = fileInput.files?.[0];
+  if (!f) return alert('画像ファイルを選択してください');
+  const fd = new FormData();
+  fd.append('image', f);
+  const res = await fetch('/api/artworks', {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${ADMIN_TOKEN}` },
+    body: fd
+  });
+  if (!res.ok) return alert('登録に失敗しました（権限またはサーバーエラー）');
+  fileInput.value = '';
+  previewBox.innerHTML = '<span class="muted">登録しました。続けて追加できます。</span>';
+  refreshArtList();
 });
 
-app.get('/api/likes', authMiddleware, async (_req, res) => {
-  try {
-    const { rows } = await pool.query(`
-      SELECT l.id, l.username, l.artwork_id, l.created_at, a.title AS artwork_title
-      FROM likes l JOIN artworks a ON a.id = l.artwork_id
-      ORDER BY l.created_at DESC
-    `);
-    res.json(rows);
-  } catch (e) { console.error(e); res.status(500).json({ error: 'server error' }); }
+async function refreshArtList() {
+  const arts = await fetchArtworks();
+  if (!arts.length){ artList.innerHTML = '<div class="muted">まだ作品がありません</div>'; return; }
+  artList.innerHTML = '';
+  for (const a of arts) {
+    const div = document.createElement('div');
+    div.className = 'card';
+    div.dataset.artId = String(a.id);
+    div.innerHTML = `
+      <div class="dragrow">
+        <div class="imgbox" style="min-height:160px"><img src="/api/artworks/${a.id}/image" alt="作品 #${a.id}" /></div>
+        <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; justify-content:space-between; margin-top:8px;">
+          <div><strong>作品 #${a.id}</strong></div>
+          <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+            <span class="drag-handle">ドラッグで並び替え</span>
+            <span class="pill">いいね ${a.like_count||0}</span>
+            <button class="secondary" data-act="edit">編集</button>
+            <button data-act="delete">削除</button>
+          </div>
+        </div>
+      </div>`;
+    const editBtn = div.querySelector('button[data-act="edit"]');
+    const delBtn = div.querySelector('button[data-act="delete"]');
+    editBtn.addEventListener('click', () => onClickEdit(a));
+    delBtn.addEventListener('click', () => onClickDelete(a));
+    artList.appendChild(div);
+  }
+  enableDnD();
+}
+
+// Utility
+function escapeHtml(s){ return (s||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+// init
+showTab('exhibit');
+
+// ===== Admin edit/delete =====
+const editModal = document.getElementById('editModal');
+const editFile = document.getElementById('editFile');
+const editPreview = document.getElementById('editPreview');
+const editSaveBtn = document.getElementById('editSaveBtn');
+const editMsg = document.getElementById('editMsg');
+let editingId = null;
+
+editFile?.addEventListener('change', () => {
+  editPreview.innerHTML = '';
+  const f = editFile.files?.[0];
+  if (!f) { editPreview.innerHTML = '<span class="muted">現在の画像</span>'; return; }
+  const url = URL.createObjectURL(f);
+  const img = new Image(); img.src = url; img.onload = () => URL.revokeObjectURL(url);
+  editPreview.appendChild(img);
 });
 
-app.get('/api/ranking', authMiddleware, async (_req, res) => {
-  try {
-    const { rows } = await pool.query(`
-      SELECT a.id, a.title, a.author, COALESCE(c.c,0)::int AS like_count
-      FROM artworks a
-      LEFT JOIN (SELECT artwork_id, COUNT(*)::int AS c FROM likes GROUP BY artwork_id) c
-        ON c.artwork_id = a.id
-      ORDER BY like_count DESC, a.sort_order ASC NULLS LAST, a.created_at ASC
-    `);
-    res.json(rows);
-  } catch (e) { console.error(e); res.status(500).json({ error: 'server error' }); }
+editSaveBtn?.addEventListener('click', async () => {
+  if (!ADMIN_TOKEN || !editingId) return;
+  const f = editFile.files?.[0];
+  if (!f) return alert('差し替える画像ファイルを選択してください');
+  const fd = new FormData();
+  fd.append('image', f);
+  const res = await fetch(`/api/artworks/${editingId}`, {
+    method: 'PUT',
+    headers: { 'Authorization': `Bearer ${ADMIN_TOKEN}` },
+    body: fd
+  });
+  if (!res.ok) { editMsg.textContent = '保存に失敗しました'; return; }
+  editMsg.textContent = '保存しました';
+  editModal.close();
+  editFile.value = '';
+  refreshArtList();
 });
 
-// ---- Serve ----
-app.listen(PORT, async () => {
-  try { await migrate(); } catch (e) { console.error('[migrate] failed', e); }
-  console.log(`Server listening on :${PORT}`);
-});
+async function onClickEdit(a) {
+  editingId = a.id;
+  editFile.value = '';
+  editPreview.innerHTML = `<img src="/api/artworks/${a.id}/image" style="max-width:100%; max-height:240px; object-fit:contain;" />`;
+  editMsg.textContent = '';
+  editModal.showModal();
+}
+
+async function onClickDelete(a) {
+  if (!confirm(`作品 #${a.id} を削除しますか？（いいね履歴も同時に削除されます）`)) return;
+  const res = await fetch(`/api/artworks/${a.id}`, {
+    method: 'DELETE',
+    headers: { 'Authorization': `Bearer ${ADMIN_TOKEN}` }
+  });
+  if (!res.ok) return alert('削除に失敗しました');
+  refreshArtList();
+}
+
+// ===== Drag & Drop ordering (admin) =====
+let dragEl = null;
+
+function enableDnD() {
+  if (!ADMIN_TOKEN) return; // admin only
+  [...artList.children].forEach(card => {
+    card.setAttribute('draggable', 'true');
+    card.addEventListener('dragstart', (e) => {
+      dragEl = card;
+      card.classList.add('dragging');
+      e.dataTransfer.effectAllowed = 'move';
+    });
+    card.addEventListener('dragend', async () => {
+      card.classList.remove('dragging');
+      dragEl = null;
+      await saveOrderToServer();
+    });
+    card.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      const target = card;
+      if (!dragEl || dragEl === target) return;
+      target.classList.add('drop-target');
+      const rect = target.getBoundingClientRect();
+      const before = (e.clientY - rect.top) < rect.height / 2;
+      if (before) target.parentNode.insertBefore(dragEl, target);
+      else target.parentNode.insertBefore(dragEl, target.nextSibling);
+    });
+    card.addEventListener('dragleave', () => card.classList.remove('drop-target'));
+    card.addEventListener('drop', (e) => {
+      e.preventDefault();
+      card.classList.remove('drop-target');
+    });
+  });
+}
+
+async function saveOrderToServer() {
+  const ids = [...artList.children].map(c => Number(c.dataset.artId)).filter(Boolean);
+  if (!ids.length) return;
+  await fetch('/api/artworks/order', {
+    method: 'PUT',
+    headers: {
+      'Content-Type':'application/json',
+      'Authorization': `Bearer ${ADMIN_TOKEN}`
+    },
+    body: JSON.stringify({ ids })
+  });
+}
